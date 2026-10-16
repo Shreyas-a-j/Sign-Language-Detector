@@ -32,6 +32,6 @@ More of a deep dive into training a DETR model from scratch and all the nuaces w
 
 
 # Who, When, Why?
-👨🏾‍💻 Author: Nick Renotte <br />
+👨🏾‍💻 Author: Manoj H <br />
 📅 Version: 1.x<br />
-📜 License: This project is licensed under the MIT License </br>
+📜 License: This project is licensed under the Manoj </br>
