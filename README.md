@@ -148,14 +148,46 @@ single-sample smoke runs.
 
 ## Evaluation
 
+### Detection metrics (mAP, precision, recall)
+
+```bash
+uv run src/evaluate.py \
+  --checkpoint checkpoints/best.pt \
+  --test-dir data/test \
+  --device cpu \
+  --name baseline
+```
+
+This writes:
+
+- `reports/baseline_metrics.json` — mAP@0.5, mAP@0.5:0.95, per-class AP,
+  precision/recall at the documented confidence and IoU thresholds, GT/prediction
+  counts, and FP/FN totals.
+- `reports/error_analysis.json` — per-image matching detail, confidence
+  histogram, and false positive/false negative records.
+- `reports/error_analysis/*.jpg` — annotated overlays (green = GT, blue = TP,
+  red = FP, orange = FN), capped by `--max-visualizations`.
+- `reports/baseline_summary.md` — human-readable summary.
+
+Metric conventions:
+
+- Boxes are normalized xyxy. Predictions below `--score-threshold` (default
+  `0.01`) are excluded from AP; AP uses 101-point COCO-style interpolation.
+- mAP@0.5:0.95 averages AP over IoU 0.50, 0.55, ..., 0.95.
+- Classes with no ground-truth boxes have *undefined* AP (`null`), not zero.
+- Reported precision/recall use `--confidence` (default `0.5`) and `--iou`
+  (default `0.5`). Metrics aggregate over the whole dataset, never per batch.
+- Classification accuracy is not reported as a substitute for detection mAP.
+
+### Loss-only smoke evaluation
+
 ```bash
 uv run src/test.py --checkpoint checkpoints/best.pt --device auto
 ```
 
-The evaluation script runs every test batch, including incomplete final
-batches, and reports held-out test loss and the number of detections above the
-threshold. It does not report accuracy or mAP because the repository does not
-implement those metrics.
+`test.py` runs every test batch, including incomplete final batches, and
+reports held-out test loss and the number of detections above the threshold.
+Use `src/evaluate.py` for detection metrics.
 
 Checkpoint selection is explicit:
 
@@ -219,6 +251,92 @@ uv run label-studio
 
 Export bounding boxes in YOLO format.
 
+## Dataset audit and Amrita SLR integration
+
+Audit the internal splits, split leakage, and the external archive:
+
+```bash
+uv run src/audit_datasets.py
+```
+
+Outputs:
+
+- `reports/dataset_audit.json`
+- `reports/dataset_compatibility.json`
+- `reports/split_integrity.json`
+- `reports/PHASE2_DATASET_AUDIT.md`
+
+The audit detects byte-identical duplicates, perceptual near-duplicates, and
+recording-group keys inferred from filename UUIDs. It also reports when signer
+metadata is absent, which means person-independent generalization cannot be
+established.
+
+### Amrita SLR (video-level labels only)
+
+The archive is expected at `dataset/Amrita SLR- Real Time ISL Dataset.zip` or
+`dataset_zip/Amrita SLR- Real Time ISL Dataset.zip`. Inspect it without
+extracting:
+
+```bash
+uv run src/prepare_amrita.py --inspect-only
+```
+
+Extract safely (the ZIP contains a nested ZIP), then build a manifest:
+
+```bash
+uv run src/prepare_amrita.py
+```
+
+Reuse an existing extraction without copying 1.5 GB again:
+
+```bash
+uv run src/prepare_amrita.py --manifest-only
+```
+
+Optional single-frame sampling for qualitative inspection:
+
+```bash
+uv run src/prepare_amrita.py --manifest-only \
+  --frames-dir reports/amrita_frames \
+  --frame-classes hello thankyou
+```
+
+Extraction rejects path traversal, absolute paths, drive paths, symlinks, and
+non-empty destinations unless `--overwrite` is explicit. The original archive
+is never modified. Extracted data and the ZIP are Git-ignored.
+
+Important limits of the Amrita archive:
+
+- 978 videos in 49 class folders, with video-level labels only.
+- No bounding boxes, no temporal annotations, and no train/test split.
+- No sign-definition documentation, license, or citation inside the archive.
+- `hello` and `thankyou` match project glosses but remain
+  `candidate_unverified`; `iloveyou` is absent.
+- No class is mapped from English gloss alone, and no bounding boxes are
+  invented. The corpus is therefore **not** used for DETR training or
+  detection evaluation in Phase 2.
+
+A mapping is only accepted when an explicit sign-definition evidence file is
+provided:
+
+```bash
+uv run src/prepare_amrita.py --manifest-only --evidence path/to/evidence.json
+```
+
+See `src/utils/compat.py` for the evidence schema.
+
+## Runtime benchmarking
+
+```bash
+uv run src/benchmark.py --device cpu --runs 20 --warmup 3 --batch-size 1
+```
+
+Writes `reports/benchmark.json` and `reports/benchmark_summary.md`. The
+benchmark warms the model, separates preprocessing/model/postprocessing
+latency, reports median and p95, FPS, and CPU RSS (plus CUDA peak memory when
+available). Camera capture and display are excluded. CUDA stages synchronize
+before timestamps. No numbers are extrapolated.
+
 ## Tests and checks
 
 ```bash
@@ -245,6 +363,16 @@ weight downloads.
 
 - The included dataset is small (100 training images, 15 test images). Do not
   interpret test loss or detection counts as real-world recognition accuracy.
+- `checkpoints/best.pt` in this checkout is an early checkpoint (epoch 2). The
+  Phase 2 baseline measured mAP@0.5 = 0.0919 and mAP@0.5:0.95 = 0.0232 on
+  `data/test`; no detection reached the 0.5 confidence threshold. See
+  `reports/baseline_metrics.json` for the recorded run and exact hashes.
+- Split integrity is **confirmed leaked**: train and test share a recording
+  group, and 110 near-duplicate pairs cross the split boundary. These numbers
+  are not person-independent generalization. See `reports/split_integrity.json`.
+- The Amrita SLR archive has video-level labels only. It has no boxes, no
+  temporal annotations, and no verified sign definitions, so it is excluded
+  from DETR training and detection evaluation.
 - There is no temporal smoothing or sequence model; webcam predictions are
   per-frame.
 - New classes require matching annotations, `src/config.json` changes, and a
